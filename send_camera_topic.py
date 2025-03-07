@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # server URL
-SOCKET_SERVER_URL = "http://43.201.110.253:8081"
+SOCKET_SERVER_URL = "server_url"
 
 # ICE server
 pc_config = RTCConfiguration(
