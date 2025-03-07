@@ -23,13 +23,16 @@ from aiortc import (
 )
 from aiortc.contrib.media import MediaPlayer, MediaRecorder
 from av import VideoFrame
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # set logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # server URL
-SOCKET_SERVER_URL = "server_url"
+SOCKET_SERVER_URL = os.getenv("SOCKET_SERVER_URL", "http://default-url.com")
 
 # ICE server
 pc_config = RTCConfiguration(
@@ -46,7 +49,10 @@ class WebRTCClient:
         self.data_channel = None
         self.ice_candidates = []
         self.connected = False
-        self.room_id = "1234" # basic room ID
+        self.room_id = os.getenv("ROOM_ID") # basic room ID
+
+        if not self.room_id:
+            raise ValueError("🚨 ROOM_ID 환경 변수가 설정되지 않았습니다! .env 파일을 확인하세요.")
 
         # set ROS camera stream
         self.bridge = CvBridge()
