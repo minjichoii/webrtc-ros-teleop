@@ -130,6 +130,7 @@ class WebRTCClient:
             except Exception as e:
                 print(f"Error setting Remote description: {e}")
                 print("re-initializing connection due to error..")
+                
                 # when error occur, try reconnecting
                 await asyncio.sleep(2)
                 await self.initialize_connection()
@@ -154,6 +155,7 @@ class WebRTCClient:
                 )
                 await self.pc.addIceCandidate(candidate_obj)
                 print("ICE candidate added")
+                
             except Exception as e:
                 logger.error(f"ICE candidate add error: {e}")
     
