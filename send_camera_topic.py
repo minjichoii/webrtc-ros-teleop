@@ -16,6 +16,7 @@ from cv_bridge import CvBridge
 from aiortc import (
     RTCConfiguration,
     RTCDataChannel,
+    RTCIceServer,
     RTCIceCandidate,
     RTCPeerConnection,
     RTCSessionDescription,
@@ -37,7 +38,7 @@ SOCKET_SERVER_URL = os.getenv("SOCKET_SERVER_URL", "http://default-url.com")
 # ICE server
 pc_config = RTCConfiguration(
     iceServers=[
-        {"urls": ["stun:stun.l.google.com:19302"]}
+        RTCIceServer(urls="stun:stun.l.google.com:19302"),
     ]
 )
 
@@ -49,7 +50,7 @@ class WebRTCClient:
         self.data_channel = None
         self.ice_candidates = []
         self.connected = False
-        self.room_id = os.getenv("ROOM_ID") # basic room ID
+        self.room_id = "1234"# basic room ID
 
         if not self.room_id:
             raise ValueError("🚨 ROOM_ID 환경 변수가 설정되지 않았습니다! .env 파일을 확인하세요.")
@@ -57,10 +58,12 @@ class WebRTCClient:
         # set ROS camera stream
         self.bridge = CvBridge()
         self.latest_frame = None 
+        print("set ROS camera stream")
 
         # subscribe the ROS camera topic
         rospy.init_node("webrtc_camera_node", anonymous= True)
-        rospy.Subscriber("/camera/image_raw", Image, self.image_callback)
+        print("init ros node")
+        rospy.Subscriber("/camera/color/image_raw", Image, self.image_callback)
 
         # socket event handler
         self.setup_socket_events()
@@ -69,17 +72,23 @@ class WebRTCClient:
         # convert the ROS image to OpenCV format
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            if self.latest_frame is None:
+                print("complete to convert image") #check the subscribe
             self.latest_frame =  frame
+            
         except Exception as e:
             rospy.logerr(f"failed to convert image: {e}")
 
     def setup_socket_events(self):
+        print(f" ROOM_ID 확인: {self.room_id}") # printed 
         @self.sio.event
         async def connect():
-            logger.info("Connected to socket server")
-            await self.initialize_connection()
+            print(f"Connected to socket server") #complete connection
+            await self.initialize_connection() # here
+            print(f"방 {self.room_id} 참가 요청 전송 중...")
             await self.sio.emit("join_room", {"room": self.room_id})
-            logger.info(f"방 {self.room_id}에 참가 요청 전송")
+            # await self.sio.emit("join_room", json.dumps({"room": self.room_id}))
+            print(f"방 {self.room_id}에 참가 요청 전송")
 
         @self.sio.event
         async def connect_error(error):
@@ -87,26 +96,40 @@ class WebRTCClient:
 
         @self.sio.event
         async def all_users(all_users):
-            logger.info(f"all_users event: {all_users}")
+            print(f"👪️ all_users event: {all_users}")
             if all_users and len(all_users)>0:
-                await self.create_offer()
+                print("✅ 다른 사용자가 존재함. Offer를 보낼 수 있음.")
+
+                # Offer 전송 여부 확인
+                if self.pc and self.pc.localDescription:
+                    print("📡 Offer가 이미 생성됨. 서버가 Offer를 전달했는지 확인 중...")
+                else:
+                    print("⚠️ Offer가 생성되지 않았거나 서버에서 전달되지 않았을 가능성이 있음.")
+
+                if not self.pc.localDescription:
+                    await self.create_offer()
+        
+        @self.sio.event
+        async def offer_acknowledged():
+            print("server acknowledged offer reception")
 
         @self.sio.event
         async def getOffer(sdp):
-            logger.info("getOffer event")
+            print("getOffer event")
             await self.create_answer(sdp)
 
         @self.sio.event
         async def getAnswer(sdp):
-            logger.info("getAnswer event")
-            if not self.pc:
-                return
-            
+            print("🔵 getAnswer event received")
+            # sdp type: answer
+
             try:
+                print(f"received Answer SDP:\n{sdp['sdp']}")
                 await self.pc.setRemoteDescription(RTCSessionDescription(sdp["type"], sdp["sdp"]))
-                logger.info("Complete setting Remote description (answer)")
+                print("Complete setting Remote description (answer)")
             except Exception as e:
-                logger.error(f"Error setting Remote description: {e}")
+                print(f"Error setting Remote description: {e}")
+                print("re-initializing connection due to error..")
                 # when error occur, try reconnecting
                 await asyncio.sleep(2)
                 await self.initialize_connection()
@@ -114,6 +137,7 @@ class WebRTCClient:
         @self.sio.event
         async def getCandidate(candidate):
             if not self.pc:
+                print("No PeerConnection. failed to add ICE")
                 return
 
             try:
@@ -129,16 +153,20 @@ class WebRTCClient:
                     sdpMLineIndex=candidate.get("sdpMLineIndex", None),
                 )
                 await self.pc.addIceCandidate(candidate_obj)
-                logger.info("ICE candidate added")
+                print("ICE candidate added")
             except Exception as e:
                 logger.error(f"ICE candidate add error: {e}")
     
     async def initialize_connection(self):
-        logger.info("initialize connection")
+        print("initialize connection") #printed 
         
         # organize the before connection
         if self.pc:
             await self.pc.close()
+            print("completed init RTCPeerConnection")
+
+        #if self.pc is None:
+        #    print("Error: RTCPeerConnection (self.pc) is None") 
 
         # initialize the ICE candidate
         self.ice_candidates= []
@@ -146,10 +174,9 @@ class WebRTCClient:
 
         # initialize the RTCPeerConnection
         self.pc = RTCPeerConnection(configuration=pc_config)
-        logger.info("Complete initialize the RTCPeerConnection")
+        print("Complete initialize the RTCPeerConnection")
 
-        video_track = ROSVideoStreamTrack(self)
-        self.pc.addTrack(video_track)
+        # print(f"connected transiver list: {self.pc.getTransceiver()}")
         
         # create the data channel
         #self.setup_data_channel(self.data_channel)
@@ -160,8 +187,9 @@ class WebRTCClient:
         # ICE candidate event handler
         @self.pc.on("icecandidate")
         async def on_ice_candidate(candidate):
+            print("ICE candidate event occur")
             if candidate:
-                logger.info(f"create ICE candidate: {candidate.candidate} ")
+                print(f"create ICE candidate: {candidate.candidate} ")
 
                 # save the ICE candidate
                 self.ice_candidates.append(candidate)
@@ -172,31 +200,45 @@ class WebRTCClient:
                     "sdpMid": candidate.sdpMid,
                     "sdpMLineIndex": candidate.sdpMLineIndex,
                 }
+                print(f"sent ICE candidate")
                 await self.sio.emit("candidate", candidate_dict)
+
+        video_track = ROSVideoStreamTrack(self) # check here
+        if video_track:
+            print("success to create ROSVideoStream")
+        else:
+            print("failed to create ROSVideoStream")
+
+        # self.pc.addTrack(video_track) #transiver 
+        try:
+            self.pc.addTrack(video_track)
+            print("✅ added video track")
+        except Exception as e:
+            print(f"❌ failed to add video track: {e}")
 
         # data channel event handler
         @self.pc.on("datachannel")
         def on_datachannel(channel):
-            logger.info(f"data channel: {channel.label}")
+            print(f"data channel: {channel.label}")
             self.setup_data_channel(channel)
 
         # changing the state ICE connection event handler
         @self.pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            logger.info(f"change the state of ICE connection: {self.pc.iceConnectionState}")
+            print(f"change the state of ICE connection: {self.pc.iceConnectionState}")
 
             if self.pc.iceConnectionState in ["connected", "completed"]:
                 self.connected=True
-                logger.info("connected")
+                print("connected")
             elif self.pc.iceConnectionState == "disconnected":
                 self.connected = False
-                logger.info("not connected")
+                print("not connected")
                 # try to reconnect after 5sec
                 await asyncio.sleep(5)
                 await self.initialize_connection()
             elif self.pc.iceConnectionState == "failed":
                 self.connected = False
-                logger.info("failed to connect")
+                print("failed to connect")
                 # try to reconnect at that time
                 await self.initialize_connection()
 
@@ -204,28 +246,28 @@ class WebRTCClient:
     def setup_data_channel(self, channel):
         @channel.on("open")
         def on_open():
-            logger.info(f"opened data channel: {channel.label}")
+            print(f"opened data channel: {channel.label}")
             self.connected = True
         
         @channel.on("close")
         def on_close():
-            logger.info(f"closed data channel: {channel.label}")
+            print(f"closed data channel: {channel.label}")
             self.connected = False
 
         @channel.on("message")
         def on_message(message):
-            logger.info(f"received message: {message}")
+            print(f"received message: {message}")
     
     #async def setup_media_stream(self):
-    #    logger.info("start to set media stream")
+    #    print("start to set media stream")
 
         # create video track and adding
         #video_track = VideoStreamTrack(self)
         #self.pc.addTrack(video_track)
-    #    logger.info("complete adding video track")
+    #    print("complete adding video track")
 
     async def create_offer(self):
-        logger.info("start to create Offer")
+        print("start to create Offer")
         if not self.pc:
             logger.error("didn't initialize PeerConnection")
             return
@@ -233,48 +275,53 @@ class WebRTCClient:
         try:
             offer = await self.pc.createOffer()
             await self.pc.setLocalDescription(offer)
-            logger.info("complete to set Local description")
+            print("complete to set Local description")
+            print(f"offer SDP:\n{offer.sdp}")
 
             # send Offer
             await self.sio.emit("offer", {
                 "type": offer.type,
                 "sdp": offer.sdp
             })
-            logger.info("complete sending Offer")
+            print("complete sending Offer")
+
+            print("checking all users after sendig offer...")
+            await self.sio.emit("join_room", {"room": self.room_id})
+
         except Exception as e:
             logger.error(f"error on Offer creation: {e}")
 
     async def create_answer(self, sdp):
-        logger.info("start to create the Answer")
+        print("start to create the Answer")
         if not self.pc:
-            logger.info("did't initialize the PeerConnection")
+            print("did't initialize the PeerConnection")
             return
         
         try:
             # remote 
             await self.pc.setRemoteDescription(RTCSessionDescription(sdp["type"], sdp["sdp"]))
-            logger.info("complete setting Remote descriptuon")
+            print("complete setting Remote descriptuon")
 
             # create answer
             answer = await self.pc.createAnswer()
             await self.pc.setLocalDescription(answer)
-            logger.info("complete setting Local description")
+            print("complete setting Local description")
 
             # send Answer
             await self.sio.emit("answer", {
                 "type": answer.type,
                 "sdp": answer.sdp
             })
-            logger.info("sent answer")
+            print("sent answer")
         except Exception as e:
             logger.error(f"error Answer creation: {e}")
 
     async def connect(self):
-        logger.info("trying to connect server")
+        print("trying to connect server")
         await self.sio.connect(SOCKET_SERVER_URL, transports=["websocket", "polling"])
 
     async def disconnect(self):
-        logger.info("finished connection")
+        print("finished connection")
 
         # turn off camera!!! add code!!
 
@@ -297,6 +344,7 @@ class ROSVideoStreamTrack(VideoStreamTrack):
 
     async def recv(self):
         """ ROS 카메라에서 최신 프레임을 가져와 WebRTC로 전송 """
+        print(f"recv called")
         self.frame_count += 1
 
         # 최신 프레임 가져오기
@@ -323,14 +371,17 @@ async def main():
         # connect server
         await client.connect()
 
-        # maintain the connection
-        if client.connected:
-            logger.info("state : connected")
-        else:
-            looger.info("state: not connected")
+        while True:
+            await asyncio.sleep(1)
+
+            # maintain the connection
+            if client.connected:
+                print("state : connected")
+            else:
+                print("state: not connected")
 
     except KeyboardInterrupt:
-        logger.info("finished the program")
+        print("finished the program")
     finally:
         # finish
         await client.disconnect()
