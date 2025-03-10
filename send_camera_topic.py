@@ -124,7 +124,17 @@ class WebRTCClient:
             # sdp type: answer
 
             try:
-                print(f"received Answer SDP:\n{sdp['sdp']}")
+                sdp_type = sdp.get("type", None)
+                sdp_sdp = sdp.get("sdp", None)
+
+                print(f"🔹 SDP Type: {sdp_type}")
+                print(f"🔹 SDP Content:\n{sdp_sdp}")
+                # type: str
+                print(f" type check: {type(sdp.get('type'))}, {type(sdp.get('sdp'))}")
+
+                if sdp_type not in ["offer", "pranswer", "answer", "rollback"]:
+                    print(f"Invalid SDP type received: '{sdp_type}")
+                
                 await self.pc.setRemoteDescription(RTCSessionDescription(sdp["type"], sdp["sdp"]))
                 print("Complete setting Remote description (answer)")
             except Exception as e:
@@ -142,6 +152,10 @@ class WebRTCClient:
                 return
 
             try:
+                print (f"Received ICE Candidate: {candidate}")
+                if "candidate" not in cnadidate or "sdpMid" not in candidate or "sdpMLineIndex" not in candidate:
+                    raise ValueError(f"Invalid ICE candidate data received: {candidate}")
+                
                 candidate_obj = RTCIceCandidate(
                     component=candidate.get("component", None),
                     foundation=candidate.get("foundation", None),
