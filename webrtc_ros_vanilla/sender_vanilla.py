@@ -9,6 +9,7 @@ import cv2
 import rospy
 import numpy as np
 import socketio
+from geometry_msgs.msg import Twist
 from pathlib import Path
 from aiohttp import web
 from sensor_msgs.msg import Image
@@ -54,17 +55,20 @@ class WebRTCClient:
         self.connected = False
         self.room_id = "1234"  # 기본 방 ID
 
+        self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        print("-- ROS cmd_vel 퍼블리셔 설정 완료 --")
+
         if not self.room_id:
             raise ValueError("🚨 ROOM_ID 환경 변수가 설정되지 않았습니다! .env 파일을 확인하세요.")
 
         # ROS 카메라 스트림 설정
         self.bridge = CvBridge()
         self.latest_frame = None 
-        print("ROS 카메라 스트림 설정 완료")
+        print("-- ROS 카메라 스트림 설정 완료 --")
 
         # ROS 카메라 토픽 구독
         rospy.init_node("webrtc_camera_node", anonymous=True)
-        print("ROS 노드 초기화 완료")
+        print("-- ROS 노드 초기화 완료 --")
         rospy.Subscriber("/camera/color/image_raw", Image, self.image_callback)
 
         # Socket 이벤트 핸들러 설정
@@ -75,11 +79,11 @@ class WebRTCClient:
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             if self.latest_frame is None:
-                print("이미지 변환 완료")
+                print("Complete: ROS Image ---> OpenCV form")
             self.latest_frame = frame
             
         except Exception as e:
-            rospy.logerr(f"이미지 변환 실패: {e}")
+            rospy.logerr(f"Failed: ROS Imgae ---> OpenCV form : {e}")
 
     def setup_socket_events(self):
         print(f"방 ID 확인: {self.room_id}")
@@ -91,6 +95,11 @@ class WebRTCClient:
             print(f"방 {self.room_id} 참가 요청 전송 중...")
             await self.sio.emit("join_room", {"room": self.room_id})
             print(f"방 {self.room_id}에 참가 요청 전송 완료")
+
+            # 방 참가 후 짧은 지연 시간 후 무조건 offer 생성 시도
+            await asyncio.sleep(3)
+            print("방 참가 후 자동 offer 생성 시도")
+            await self.create_offer()  # all_users 이벤트와 무관하게 offer 시도
 
         @self.sio.event
         async def connect_error(error):
@@ -111,7 +120,7 @@ class WebRTCClient:
         
         @self.sio.event
         async def getOffer(sdp):
-            print("getOffer 이벤트 수신")
+            print("🔵 getOffer 이벤트 수신")
             await self.create_answer(sdp)
 
         @self.sio.event
@@ -121,7 +130,7 @@ class WebRTCClient:
             try:
                 sdp_type = sdp.get("type", "")
                 sdp_sdp = sdp.get("sdp", "")
-                print(f"✅ 수신한 SDP 타입: '{sdp_type}'")
+                # print(f"✅ 수신한 SDP 타입: '{sdp_type}'")
 
                 # RTCSessionDescription 생성
                 rtc_sdp = RTCSessionDescription(sdp=sdp_sdp, type=sdp_type)
@@ -198,10 +207,16 @@ class WebRTCClient:
         except Exception as e:
             print(f"❌ 비디오 트랙 추가 실패: {e}")
 
+        # 데이터 채널 생성없이 수신만 하고 있었음. 데이터 채널 생성!
+        self.data_channel = self.pc.createDataChannel("textChannel")
+        print(f"🔄 데이터 채널 생성: {self.data_channel}")
+
+        self.setup_data_channel(self.data_channel)
+
         # 데이터 채널 이벤트 핸들러
         @self.pc.on("datachannel")
         def on_datachannel(channel):
-            print(f"데이터 채널 수신: {channel.label}")
+            print(f"🔄 데이터 채널 수신: {channel.label}")
             self.setup_data_channel(channel)
         
         # ICE 연결 상태 변화 이벤트 핸들러
@@ -223,21 +238,87 @@ class WebRTCClient:
                 print("❌ WebRTC 연결 실패")
                 # 즉시 재연결 시도
                 await self.initialize_connection()
+            elif self.pc.iceConnectionState == "closed":
+                self.connected = False
+                print("❌ WebRTC 연결이 closed 상태로 변경됨")
+
+                try:
+                    print(f"  -Signaling 상태: {self.pc.signalingState}")
+                    print(f"  - ICE Gathering 상태: {self.pc.iceGatheringState}")
+
+                    stats = await self.pc.getStats()
+                    connection_stats = {}
+                    for stat in stats.values():
+                        if stat.type == "candidate-pair" and stat.state == "failed":
+                            print(f"  - 실패한 ICE 후보 쌍 발견: {stat}")
+                        elif stat.type == "transport":
+                            connection_stats = stat
+
+                    if connection_stats:
+                        print(f"  - 연결 통계: {connection_stats}")
+
+                    print(f"  - 소켓 연결 상태: {self.sio.connected}")
+
+                except Exception as e:
+                    print(f"  - 연결 진단 중 오류: {e}")
+
+                # 연결 재시도
+                print("  - 재연결 시도 중...")
+                await asyncio.sleep(1)
+                await self.initialize_connection()
 
     def setup_data_channel(self, channel):
+        # print(f"데이터 채널 설정 중: {channel.label}, 상태: {channel.readyState}")
+
         @channel.on("open")
         def on_open():
-            print(f"데이터 채널 열림: {channel.label}")
+            print(f"🔄 데이터 채널 열림: {channel.label}")
             self.connected = True
+
+            # 채널이 열렸을 때 테스트 메시지 전송
+            channel.send(json.dumps({"type": "status", "message": "데이터 채널 연결됨"}))
         
         @channel.on("close")
         def on_close():
-            print(f"데이터 채널 닫힘: {channel.label}")
+            print(f"🔄 데이터 채널 닫힘: {channel.label}")
             self.connected = False
 
         @channel.on("message")
         def on_message(message):
-            print(f"메시지 수신: {message}")
+            # print(f"✉️ 메시지 수신: {message}")
+
+            try:
+                # JSON 형식인지 확인
+                if isinstance(message, str) and message.startswith('{'):
+                    data = json.loads(message)
+
+                    if data.get('type') == 'robot_command':
+                        linear = data.get('linear', {})
+                        angular = data.get('angular', {})
+
+                        # 로봇 이동 명령 출력
+                        print(f"✉️ 로봇 이동 명령 수신: linear_x={linear.get('x', 0)}, angular_z={angular.get('z', 0)}")
+
+                        # ROS Twist 메시지 생성
+                        twist = Twist()
+                        twist.linear.x = float(linear.get('x', 0))
+                        twist.linear.y = float(linear.get('y', 0))
+                        twist.linear.z = float(linear.get('z', 0))
+                        twist.angular.x = float(angular.get('x', 0))
+                        twist.angular.y = float(angular.get('y', 0))
+                        twist.angular.z = float(angular.get('z', 0))
+
+                        # cmd_vel 토픽으로 퍼블리시
+                        self.cmd_vel_pub.publish(twist)
+                        print(f"cmd_vel 퍼블리시 완료: {twist}")
+                    else:
+                        # 일반 JSON 메시지 처리
+                        print(f"🤖 로봇 명령 JSON 데이터 수신: {data}")
+                else:
+                    # 일반 텍스트 메시지 처리
+                    print(f"✉️ 일반 텍스트 메시지 수신: {message}")
+            except Exception as e:
+                print(f"메시지 처리 중 오류 발생: {e}")
     
     # ICE 후보 수집 함수 수정
     async def wait_for_ice_gathering_complete(self):

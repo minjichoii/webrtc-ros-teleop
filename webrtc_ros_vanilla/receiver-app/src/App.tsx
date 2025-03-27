@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import io from "socket.io-client";
+import TeleopKeypad from "./components/TeleopKeypad";
 
 // process 객체가 없을 경우 폴리필 추가 (타입 오류 해결)
 if (typeof window !== 'undefined' && !window.process) {
@@ -28,22 +29,35 @@ console.log("✅ 방 ID (roomId):", roomId);
 
 
 const App = () => {
+  {/* 참조값 관리 */}
+  // Socket.IO 서버와의 연결 유지
   const socketRef = useRef<SocketIOClient.Socket>(null);
+  // RTCPeerConnection 객체 유지 -> WebRTC 연결 관리
   const pcRef = useRef<RTCPeerConnection>(null);
+  // <video> DOM 요소에 접근해서 원격 스트림 표시하기 위해 사용
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  // WebRTC 데이터 채널 유지
   const dataChannelRef = useRef<RTCDataChannel>(null);
+  //메시지 입력창 제어
   const inputRef = useRef<HTMLInputElement>(null);
   
-  // 입력창 상태 관리
+  {/* 상태 관리 */}
+  // 입력창 메시지 상태 관리
   const [message, setMessage] = useState<string>("");
-  // 연결 상태 표시
+  // 연결 상태 표시 -> 연결중, 연결됨, 연결 실패
   const [connectionStatus, setConnectionStatus] = useState<string>("연결 중...");
   // 입력창 포커스 상태
   const [inputFocused, setInputFocused] = useState<boolean>(false);
-  // 재연결 트리거
+  // 재연결 트리거, 값이 바뀔 때마다 useEffect 통해 다시 연결함
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0);
   // 비디오 재생 상태
   const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
+  // ROS 버전 
+  const [rosVersion, setRosVersion] = useState("ros1"); //기본값이 ros1 
+  // 로봇 이동 상태 -> 정지, 전진, 좌회전
+  const [movementState, setMovementState] = useState<string>('정지');
+  // 로봇 속도 레벨 -> 1~10
+  const [speedLevel, setSpeedLevel] = useState<number>(5);
 
   // ICE 수집 완료 대기 함수 - 바닐라 ICE 방식
   const waitForIceGatheringComplete = (pc: RTCPeerConnection): Promise<void> => {
@@ -79,7 +93,7 @@ const App = () => {
     });
   };
 
-  // 연결 설정
+  // WebRTC 연결 설정
   const setupConnection = useCallback(async () => {
     console.log("연결 설정 시작");
     try {
@@ -89,19 +103,30 @@ const App = () => {
       }
       
       // 데이터 채널 생성
-      dataChannelRef.current = pcRef.current.createDataChannel("textChannel");
+      dataChannelRef.current = pcRef.current.createDataChannel("textChannel", {
+        ordered: true // 순서 보장 옵션 추가
+      });
+      console.log("데이터 채널 생성 상태:", dataChannelRef.current.readyState);
       console.log("데이터 채널 생성:", dataChannelRef.current.label);
       
       dataChannelRef.current.onopen = () => {
         console.log("데이터 채널이 열렸습니다.");
         setConnectionStatus("연결됨");
-        
+
         // 데이터 채널이 열리면 입력창에 포커스
         setTimeout(() => {
           if (inputRef.current) {
             inputRef.current.focus();
           }
         }, 500);
+      };
+
+      dataChannelRef.current.onmessage = (event) => {
+        console.log("데이터 채널 메시지 수신:", event.data);
+      };
+
+      dataChannelRef.current.onerror = (error) => {
+        console.error("데이터 채널 오류:", error);
       };
       
       dataChannelRef.current.onclose = () => {
@@ -144,7 +169,7 @@ const App = () => {
         if (ev.streams && ev.streams[0]) {
           console.log("원격 스트림 ID:", ev.streams[0].id);
           console.log("원격 비디오 트랙:", ev.streams[0].getVideoTracks().length);
-          console.log("원격 오디오 트랙:", ev.streams[0].getAudioTracks().length);
+          // console.log("원격 오디오 트랙:", ev.streams[0].getAudioTracks().length);
           
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = ev.streams[0];
@@ -202,6 +227,49 @@ const App = () => {
         });
     }
   }, [isVideoPlaying]);
+
+  // 속도 레벨에 따른 실제 속도값 계산
+  const calculateVelocity = (value: number): number => {
+    const baseSpeed = 0.2; 
+    const maxSpeed = 1.0;
+    return baseSpeed + ((maxSpeed - baseSpeed) * (speedLevel - 1) / 9) * value;
+  };
+
+  // 로봇에 속도 명령 전송
+  const sendRobotVelocity = useCallback((linearX: number, angularZ: number) => {
+    if (!dataChannelRef.current || dataChannelRef.current.readyState !== "open") {
+      console.log('데이터 채널이 연결되어 있지 않습니다.');
+      return;
+    }
+
+    // 로봇 제어 메시지 형식 생성
+    const robotCommand = {
+      type: 'robot_command',
+      linear: { x: calculateVelocity(linearX), y: 0, z: 0 },
+      angular: { x: 0, y: 0, z: calculateVelocity(angularZ) }
+    };
+
+    // 데이터 채널을 통해 명령 전송
+    dataChannelRef.current.send(JSON.stringify(robotCommand));
+    console.log('로봇 명령 전송:', robotCommand);
+    
+    // 이동 상태 설정
+    setMovementState(getMovementState(linearX, angularZ));
+  }, [dataChannelRef, speedLevel]);
+
+  // 이동 방향에 따른 상태 텍스트 반환
+  const getMovementState = (linearX: number, angularZ: number): string => {
+    if (linearX === 0 && angularZ === 0) return '정지';
+    if (linearX > 0 && angularZ === 0) return '전진';
+    if (linearX < 0 && angularZ === 0) return '후진';
+    if (linearX === 0 && angularZ > 0) return '좌회전';
+    if (linearX === 0 && angularZ < 0) return '우회전';
+    if (linearX > 0 && angularZ > 0) return '왼쪽 전진';
+    if (linearX > 0 && angularZ < 0) return '오른쪽 전진';
+    if (linearX < 0 && angularZ < 0) return '왼쪽 후진';
+    if (linearX < 0 && angularZ > 0) return '오른쪽 후진';
+    return '알 수 없음';
+  };
 
   // 메시지 전송 함수
   const sendMessage = useCallback(() => {
@@ -337,6 +405,8 @@ const App = () => {
   }, [setupConnection]);
 
   // 재연결 효과
+  {/* reconnecterTrigger 값이 바뀔 때마다 자동으로 연결 초기화
+    (initializeConnection()), 주로 연결 실패하거나 끊어졌을 때 재연결 위한 처리 */}
   useEffect(() => {
     if (reconnectTrigger > 0) {
       console.log("재연결 시도:", reconnectTrigger);
@@ -361,6 +431,8 @@ const App = () => {
   }, [sendMessage]);
  
   // 초기 설정
+  {/* 컴포넌트가 처음 렌더링될 때 Socket.IO 서버에 연결하고 각종 이벤트 리스너 설정
+    연결 오류 시 에빈트 등록, 컴포넌트 사라질 때 연결을 정리*/}
   useEffect(() => {
     console.log("컴포넌트 마운트 - 연결 초기화");
     
@@ -476,7 +548,8 @@ const App = () => {
         alignItems: 'center',
         justifyContent: 'center',
         height: '100vh',
-        backgroundColor: '#f5f5f5'
+        backgroundColor: '#f5f5f5',
+        padding: '20px'
       }}
     >
       <h1 style={{
@@ -516,98 +589,161 @@ const App = () => {
         )}
       </div>
       
-      <div style={{ position: 'relative' }}>
-        <video
-          id="remotevideo"
-          style={{
-            width: 480,
-            height: 480,
-            backgroundColor: "black",
-            borderRadius: "8px",
-            boxShadow: "0 4px 8px rgba(0,0,0,0.1)"
-          }}
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          muted // 초기에 음소거 상태로 설정
-        />
-        
-        {/* 비디오가 재생 중이지 않고 스트림이 없을 때만 재생 버튼 표시 */}
-        {!isVideoPlaying && (!remoteVideoRef.current?.srcObject) && (
-          <button
-            onClick={playVideo}
+      {/* 좌우 컨텐츠를 담는 컨테이너 */}
+    <div style={{
+      display: 'flex',
+      flexDirection: 'row', // 내부 컨텐츠는 가로 배치
+      alignItems: 'flex-start',
+      justifyContent: 'center',
+      width: '100%',
+      gap: '30px',
+      flex: 1 // 남은 공간 차지
+    }}>
+      {/* 왼쪽 섹션: 비디오와 메시지 입력 */}
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center'
+      }}>
+        {/* 비디오 섹션 */}
+        <div style={{ position: 'relative' }}>
+          <video
+            id="remotevideo"
             style={{
-              position: 'absolute',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              padding: '12px 24px',
-              backgroundColor: 'rgba(0, 0, 0, 0.7)',
+              width: 480,
+              height: 480,
+              backgroundColor: "black",
+              borderRadius: "8px",
+              boxShadow: "0 4px 8px rgba(0,0,0,0.1)"
+            }}
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            muted
+          />
+          
+          {!isVideoPlaying && (!remoteVideoRef.current?.srcObject) && (
+            <button
+              onClick={playVideo}
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                padding: '12px 24px',
+                backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                zIndex: 20
+              }}
+            >
+              비디오 재생
+            </button>
+          )}
+        </div>
+        
+        {/* 메시지 입력 영역 */}
+        <div style={{
+          display: 'flex',
+          marginTop: '20px',
+          width: '480px',
+          position: 'relative',
+          zIndex: 10
+        }}>
+          <input
+            type="text"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyPress={handleKeyPress}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
+            onClick={handleInputClick}
+            placeholder="메시지를 입력하세요..."
+            ref={inputRef}
+            style={{
+              flex: 1,
+              padding: '10px',
+              borderRadius: '4px 0 0 4px',
+              border: inputFocused ? '1px solid #4285f4' : '1px solid #ccc',
+              fontSize: '16px',
+              outline: 'none',
+              boxShadow: inputFocused ? '0 0 0 2px rgba(66, 133, 244, 0.2)' : 'none',
+              transition: 'all 0.2s ease'
+            }}
+            autoFocus
+          />
+          <button
+            onClick={sendMessage}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#4285f4',
               color: 'white',
               border: 'none',
-              borderRadius: '8px',
+              borderRadius: '0 4px 4px 0',
               cursor: 'pointer',
               fontSize: '16px',
               fontWeight: 'bold',
-              zIndex: 20
+              zIndex: 10
             }}
           >
-            비디오 재생
+            SEND
           </button>
-        )}
+        </div>
       </div>
-      
-      {/* 메시지 입력 영역 */}
-      <div style={{
-        display: 'flex',
-        marginTop: '20px',
-        width: '480px',
-        position: 'relative',
-        zIndex: 10 // z-index 추가
-      }}
-      //onClick={handleInputClick}
-      >
-        <input
-          type="text"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyPress={handleKeyPress}
-          onFocus={handleFocus}
-          onBlur={handleBlur}
-          onClick={handleInputClick}
-          placeholder="메시지를 입력하세요..."
-          ref={inputRef}
+
+      {/* ROS 버전 선택 */}
+      <div style={{marginBottom: '20px'}}>
+        <button 
+          onClick={() => setRosVersion("ros1")}
           style={{
-            flex: 1,
-            padding: '10px',
-            borderRadius: '4px 0 0 4px',
-            border: inputFocused ? '1px solid #4285f4' : '1px solid #ccc',
-            fontSize: '16px',
-            outline: 'none', // 기본 아웃라인 제거
-            boxShadow: inputFocused ? '0 0 0 2px rgba(66, 133, 244, 0.2)' : 'none',
-            transition: 'all 0.2s ease'
-          }}
-          autoFocus // 자동 포커스 추가
-        />
-        <button
-          onClick={sendMessage}
-          style={{
-            padding: '10px 20px',
-            backgroundColor: '#4285f4',
-            color: 'white',
-            border: 'none',
-            borderRadius: '0 4px 4px 0',
-            cursor: 'pointer',
-            fontSize: '16px',
-            fontWeight: 'bold',
-            zIndex: 10 // z-index 추가
+            background: rosVersion === "ros1" ? '#4285f4' : '#f5f5f5',
+            color: rosVersion === "ros1"? 'white': 'black',
+            padding: '8px 16px',
+            border: '1px solid #ccc',
+            borderRadius: '4px'
           }}
         >
-          SEND
+          ROS1 KEY
+        </button>
+        <button 
+          onClick={() => setRosVersion("ros2")}
+          style={{
+            background: rosVersion === "ros1" ? '#4285f4' : '#f5f5f5',
+            color: rosVersion === "ros1"? 'white': 'black',
+            padding: '8px 16px',
+            border: '1px solid #ccc',
+            borderRadius: '4px'
+          }}
+        >
+          ROS2 KEY
         </button>
       </div>
+      
+      {/* 오른쪽 섹션: 텔레오퍼레이션 키패드 */}
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        backgroundColor: '#ffffff',
+        borderRadius: '8px',
+        boxShadow: '0 4px 8px rgba(0,0,0,0.1)'
+      }}>
+        <TeleopKeypad // 버전 전달 수정하기
+          sendRobotVelocity={sendRobotVelocity}
+          movementState={movementState}
+          speedLevel={speedLevel}
+          setSpeedLevel={setSpeedLevel}
+        />
+      </div>
     </div>
-  );
+  </div>
+);
 };
 
 export default App;
