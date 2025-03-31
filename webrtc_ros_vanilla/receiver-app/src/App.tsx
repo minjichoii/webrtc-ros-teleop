@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import io from "socket.io-client";
-import TeleopKeypad from "./components/TeleopKeypad";
+
+import MessageInput from "./components/MessageInput";
+import AppLayout from "./components/AppLayout";
+import ConnectionStatus from "./components/ConnectionStatus";
+import VideoPlayer from "./components/VideoPlayer";
+import RobotControlPanel from "./components/RobotControlPanel";
 
 // process 객체가 없을 경우 폴리필 추가 (타입 오류 해결)
 if (typeof window !== 'undefined' && !window.process) {
@@ -199,35 +204,44 @@ const App = () => {
   }, []);
 
   const playVideo = useCallback(() => {
-    if (remoteVideoRef.current && remoteVideoRef.current.srcObject && !isVideoPlaying) {
+    if (remoteVideoRef.current) {
       console.log("비디오 재생 시도");
+      console.log("현재 srcObject 상태:", remoteVideoRef.current.srcObject ? "있음" : "없음");
+      console.log("현재 재생 상태:", isVideoPlaying ? "재생 중" : "재생 안 됨");
       
-      // 이미 muted 상태인지 확인하고, 필요한 경우에만 변경
-      const wasMuted = remoteVideoRef.current.muted;
-      if (!wasMuted) {
-        remoteVideoRef.current.muted = true;
+      // 스트림이 없으면 스트림 확인 메시지 표시
+      if (!remoteVideoRef.current.srcObject) {
+        console.warn("비디오 스트림이 없습니다. 연결 상태를 확인하세요.");
+        alert("비디오 스트림이 없습니다. 연결 상태를 확인하세요.");
+        return;
       }
+  
+      // 항상 mute 상태로 먼저 시도 (자동 재생 정책 우회)
+      remoteVideoRef.current.muted = true;
       
+      // 재생 시도
       remoteVideoRef.current.play()
         .then(() => {
           console.log("비디오 재생 성공");
           setIsVideoPlaying(true);
           
-          if (!wasMuted) {
-            setTimeout(() => {
-              if (remoteVideoRef.current) {
-                remoteVideoRef.current.muted = false;
-              }
-            }, 1000);
-          }
+          // 1초 후 음소거 해제 시도 (필요한 경우)
+          setTimeout(() => {
+            if (remoteVideoRef.current) {
+              // 사용자 상호작용이 있었으므로 음소거 해제 가능
+              // remoteVideoRef.current.muted = false;  // 필요에 따라 주석 해제
+            }
+          }, 1000);
         })
         .catch(e => {
           console.error("비디오 재생 오류:", e);
           setIsVideoPlaying(false);
+          
+          // 자동 재생 정책 관련 오류 메시지 표시
+          alert("비디오 재생에 실패했습니다. 브라우저의 자동 재생 정책으로 인해 제한될 수 있습니다. 다시 시도해주세요.");
         });
     }
   }, [isVideoPlaying]);
-
   // 속도 레벨에 따른 실제 속도값 계산
   const calculateVelocity = (value: number): number => {
     const baseSpeed = 0.2; 
@@ -413,13 +427,21 @@ const App = () => {
       initializeConnection();
     }
   }, [reconnectTrigger, initializeConnection]);
+  
+  const handleSendMessage = useCallback(() => {
+    sendMessage();
+  }, [sendMessage]);
 
-  const handleFocus = useCallback((e: React.FocusEvent<HTMLInputElement>) => {
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessage(e.target.value);
+  }, []);
+
+  const handleFocus = useCallback<React.FocusEventHandler<HTMLInputElement>>((e) => {
     console.log("입력창 포커스됨");
     setInputFocused(true);
   }, []);
 
-  const handleBlur = useCallback(() => {
+  const handleBlur = useCallback<React.FocusEventHandler<HTMLInputElement>>(() => {
     setInputFocused(false);
   }, []);
 
@@ -541,208 +563,61 @@ const App = () => {
   };
 
   return (
-    <div 
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100vh',
-        backgroundColor: '#f5f5f5',
-        padding: '20px'
-      }}
-    >
-      <h1 style={{
-        textAlign: "center",
-        color: "#333",
-        margin: "0 0 20px 0",
-        fontWeight: "bold"
-      }}>RECEIVER</h1>
-      
-      {/* 연결 상태 표시 */}
-      <div style={{
-        padding: '5px 10px',
-        backgroundColor: connectionStatus === "연결됨" ? '#e6f7e6' : '#ffe6e6',
-        borderRadius: '4px',
-        marginBottom: '10px',
-        color: connectionStatus === "연결됨" ? '#2e7d32' : '#c62828',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: '10px'
-      }}>
-        <span>{connectionStatus}</span>
-        {connectionStatus !== "연결됨" && (
-          <button 
-            onClick={handleReconnect}
-            style={{
-              padding: '2px 8px',
-              backgroundColor: '#f5f5f5',
-              border: '1px solid #ccc',
-              borderRadius: '3px',
-              cursor: 'pointer',
-              fontSize: '12px'
-            }}
-          >
-            재연결
-          </button>
-        )}
-      </div>
-      
+    <AppLayout>
+      <ConnectionStatus
+        connectionStatus={connectionStatus}
+        handleReconnect={handleReconnect}
+      />
+
       {/* 좌우 컨텐츠를 담는 컨테이너 */}
-    <div style={{
-      display: 'flex',
-      flexDirection: 'row', // 내부 컨텐츠는 가로 배치
-      alignItems: 'flex-start',
-      justifyContent: 'center',
-      width: '100%',
-      gap: '30px',
-      flex: 1 // 남은 공간 차지
-    }}>
-      {/* 왼쪽 섹션: 비디오와 메시지 입력 */}
       <div style={{
         display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center'
+        flexDirection: 'row', // 내부 컨텐츠는 가로 배치
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        width: '100%',
+        gap: '30px',
+        flex: 1 // 남은 공간 차지
       }}>
-        {/* 비디오 섹션 */}
-        <div style={{ position: 'relative' }}>
-          <video
-            id="remotevideo"
-            style={{
-              width: 480,
-              height: 480,
-              backgroundColor: "black",
-              borderRadius: "8px",
-              boxShadow: "0 4px 8px rgba(0,0,0,0.1)"
-            }}
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            muted
-          />
-          
-          {!isVideoPlaying && (!remoteVideoRef.current?.srcObject) && (
-            <button
-              onClick={playVideo}
-              style={{
-                position: 'absolute',
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
-                padding: '12px 24px',
-                backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                zIndex: 20
-              }}
-            >
-              비디오 재생
-            </button>
-          )}
-        </div>
-        
-        {/* 메시지 입력 영역 */}
+        {/* 왼쪽 섹션: 비디오와 메시지 입력 */}
         <div style={{
           display: 'flex',
-          marginTop: '20px',
-          width: '480px',
-          position: 'relative',
-          zIndex: 10
+          flexDirection: 'column',
+          alignItems: 'center'
         }}>
-          <input
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
+          {/* 비디오 섹션 */}
+          <VideoPlayer
+            remoteVideoRef={remoteVideoRef}
+            isVideoPlaying={isVideoPlaying}
+            playVideo={playVideo}
+          />
+          
+          {/* 메시지 입력 영역 */}
+          <MessageInput
+            message={message}
+            onChange={handleInputChange}
             onKeyPress={handleKeyPress}
             onFocus={handleFocus}
             onBlur={handleBlur}
             onClick={handleInputClick}
-            placeholder="메시지를 입력하세요..."
-            ref={inputRef}
-            style={{
-              flex: 1,
-              padding: '10px',
-              borderRadius: '4px 0 0 4px',
-              border: inputFocused ? '1px solid #4285f4' : '1px solid #ccc',
-              fontSize: '16px',
-              outline: 'none',
-              boxShadow: inputFocused ? '0 0 0 2px rgba(66, 133, 244, 0.2)' : 'none',
-              transition: 'all 0.2s ease'
-            }}
-            autoFocus
+            onSend={sendMessage}
+            inputRef={inputRef}
+            isFocused={inputFocused}
           />
-          <button
-            onClick={sendMessage}
-            style={{
-              padding: '10px 20px',
-              backgroundColor: '#4285f4',
-              color: 'white',
-              border: 'none',
-              borderRadius: '0 4px 4px 0',
-              cursor: 'pointer',
-              fontSize: '16px',
-              fontWeight: 'bold',
-              zIndex: 10
-            }}
-          >
-            SEND
-          </button>
         </div>
-      </div>
 
-      {/* ROS 버전 선택 */}
-      <div style={{marginBottom: '20px'}}>
-        <button 
-          onClick={() => setRosVersion("ros1")}
-          style={{
-            background: rosVersion === "ros1" ? '#4285f4' : '#f5f5f5',
-            color: rosVersion === "ros1"? 'white': 'black',
-            padding: '8px 16px',
-            border: '1px solid #ccc',
-            borderRadius: '4px'
-          }}
-        >
-          ROS1 KEY
-        </button>
-        <button 
-          onClick={() => setRosVersion("ros2")}
-          style={{
-            background: rosVersion === "ros1" ? '#4285f4' : '#f5f5f5',
-            color: rosVersion === "ros1"? 'white': 'black',
-            padding: '8px 16px',
-            border: '1px solid #ccc',
-            borderRadius: '4px'
-          }}
-        >
-          ROS2 KEY
-        </button>
-      </div>
-      
-      {/* 오른쪽 섹션: 텔레오퍼레이션 키패드 */}
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
-        backgroundColor: '#ffffff',
-        borderRadius: '8px',
-        boxShadow: '0 4px 8px rgba(0,0,0,0.1)'
-      }}>
-        <TeleopKeypad // 버전 전달 수정하기
+        {/* ROS 버전 선택 */}
+        <RobotControlPanel
+          rosVersion={rosVersion}
+          setRosVersion={setRosVersion}
           sendRobotVelocity={sendRobotVelocity}
           movementState={movementState}
           speedLevel={speedLevel}
           setSpeedLevel={setSpeedLevel}
         />
       </div>
-    </div>
-  </div>
+    </AppLayout>
+
 );
 };
 
