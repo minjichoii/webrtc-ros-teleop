@@ -244,13 +244,28 @@ const App = () => {
   }, [isVideoPlaying]);
   // 속도 레벨에 따른 실제 속도값 계산
   const calculateVelocity = (value: number): number => {
+    if (value === 0) return 0;
     const baseSpeed = 0.2; 
     const maxSpeed = 1.0;
     return baseSpeed + ((maxSpeed - baseSpeed) * (speedLevel - 1) / 9) * value;
   };
 
+  // 이동 방향에 따른 상태 텍스트 반환
+    const getMovementState = (linearX: number, angularZ: number): string => {
+      if (linearX === 0 && angularZ === 0) return '정지';
+      if (linearX > 0 && angularZ === 0) return '전진';
+      if (linearX < 0 && angularZ === 0) return '후진';
+      if (linearX === 0 && angularZ > 0) return '좌회전';
+      if (linearX === 0 && angularZ < 0) return '우회전';
+      if (linearX > 0 && angularZ > 0) return '왼쪽 전진';
+      if (linearX > 0 && angularZ < 0) return '오른쪽 전진';
+      if (linearX < 0 && angularZ < 0) return '왼쪽 후진';
+      if (linearX < 0 && angularZ > 0) return '오른쪽 후진';
+      return '알 수 없음';
+    };
+
   // 로봇에 속도 명령 전송
-  const sendRobotVelocity = useCallback((linearX: number, angularZ: number) => {
+  const sendRobotVelocity = useCallback((linearX: number, angularZ: number, keyInfo?: string) => {
     if (!dataChannelRef.current || dataChannelRef.current.readyState !== "open") {
       console.log('데이터 채널이 연결되어 있지 않습니다.');
       return;
@@ -260,30 +275,20 @@ const App = () => {
     const robotCommand = {
       type: 'robot_command',
       linear: { x: calculateVelocity(linearX), y: 0, z: 0 },
-      angular: { x: 0, y: 0, z: calculateVelocity(angularZ) }
+      angular: { x: 0, y: 0, z: calculateVelocity(angularZ) },
+      keyInfo: keyInfo || '알 수 없음'
     };
 
     // 데이터 채널을 통해 명령 전송
     dataChannelRef.current.send(JSON.stringify(robotCommand));
-    console.log('로봇 명령 전송:', robotCommand);
-    
-    // 이동 상태 설정
-    setMovementState(getMovementState(linearX, angularZ));
-  }, [dataChannelRef, speedLevel]);
+    console.log('로봇 명령 전송:', robotCommand, '원본값:', { linearX, angularZ , keyInfo});
 
-  // 이동 방향에 따른 상태 텍스트 반환
-  const getMovementState = (linearX: number, angularZ: number): string => {
-    if (linearX === 0 && angularZ === 0) return '정지';
-    if (linearX > 0 && angularZ === 0) return '전진';
-    if (linearX < 0 && angularZ === 0) return '후진';
-    if (linearX === 0 && angularZ > 0) return '좌회전';
-    if (linearX === 0 && angularZ < 0) return '우회전';
-    if (linearX > 0 && angularZ > 0) return '왼쪽 전진';
-    if (linearX > 0 && angularZ < 0) return '오른쪽 전진';
-    if (linearX < 0 && angularZ < 0) return '왼쪽 후진';
-    if (linearX < 0 && angularZ > 0) return '오른쪽 후진';
-    return '알 수 없음';
-  };
+    // 버튼 두개 한꺼번에 클릭되는 상황 방지-> 지연시킴
+    setTimeout(() => {
+      setMovementState(getMovementState(linearX, angularZ));
+    }, 10);
+    
+  }, [[calculateVelocity, getMovementState]]);
 
   // 메시지 전송 함수
   const sendMessage = useCallback(() => {

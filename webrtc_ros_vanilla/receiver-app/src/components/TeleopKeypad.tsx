@@ -1,6 +1,8 @@
 // src/components/TeleopKeypad.tsx
 
 import React from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useRobotControl } from '../hooks/useRobotControl';
 
 interface TeleopKeypadProps {
   rosVersion: string;
@@ -17,15 +19,31 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
   speedLevel, 
   setSpeedLevel 
 }) => {
+  const [lastEvent, setLastEvent] = useState<string>('없음');
+
+  const { handleDirectionMouseDown, sendStopCommand, activeDirection, debug } = useRobotControl({
+    sendRobotVelocity,
+    isDataChannelOpen: true,
+    rosVersion
+  });
+
+  useEffect(() => {
+    setLastEvent(debug.lastEvent);
+  }, [debug.lastEvent]);
+
   // 버튼 스타일 함수 - 현재 상태에 따라 색상 변경
-  const getButtonStyle = (state: string) => ({
+  const getButtonStyle = (direction: string) => ({
     padding: '15px',
-    backgroundColor: movementState === state ? '#4285f4' : '#e0e0e0',
-    color: movementState === state ? 'white' : 'black',
+    backgroundColor: activeDirection === direction
+      ? '#4285f4'
+      : (movementState === direction ? '#2196f3' : '#e0e0e0'),
+    color: (activeDirection === direction || movementState === direction) ? 'white' : 'black',
     border: 'none',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: 'bold' as const
+    fontWeight: 'bold' as const,
+    userSelect: 'none' as const,
+    transition: 'all 0.2s ease'
   });
 
   // 정지 버튼 스타일
@@ -36,7 +54,9 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
     border: 'none',
     borderRadius: '8px',
     cursor: 'pointer',
-    fontWeight: 'bold' as const
+    fontWeight: 'bold' as const,
+    userSelect: 'none' as const,
+    transition:  'all 0.2 ease'
   };
 
   // 속도 조절 버튼 스타일
@@ -46,28 +66,34 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
     border: 'none',
     borderRadius: '4px',
     cursor: 'pointer',
-    width: '40px'
+    width: '40px',
+    userSelect: 'none' as const
   };
 
-  // ROS1용 키 매핑 (WASD 스타일 - 4개 키)
-  const ros1Mapping = {
-    top: { key: 'w', action: () => sendRobotVelocity(1, 0), desc: '전진' },
-    left: { key: 'a', action: () => sendRobotVelocity(0, 1), desc: '좌회전' },
-    stop: { key: 's', action: () => sendRobotVelocity(0, 0), desc: '정지' },
-    right: { key: 'd', action: () => sendRobotVelocity(0, -1), desc: '우회전' }
-  };
+  // 경고 메시지
+  const KeyWarning = () => {
+    if (!debug.inValidKeyWarning) return null;
 
-  // ROS2용 키 매핑 (UIOJKL,. - 9개 키)
-  const ros2Mapping = {
-    topLeft: { key: 'u', action: () => sendRobotVelocity(1, 1), desc: '왼쪽 전진' },
-    top: { key: 'i', action: () => sendRobotVelocity(1, 0), desc: '전진' },
-    topRight: { key: 'o', action: () => sendRobotVelocity(1, -1), desc: '오른쪽 전진' },
-    left: { key: 'j', action: () => sendRobotVelocity(0, 1), desc: '좌회전' },
-    stop: { key: 'k', action: () => sendRobotVelocity(0, 0), desc: '정지' },
-    right: { key: 'l', action: () => sendRobotVelocity(0, -1), desc: '우회전' },
-    bottomLeft: { key: 'm', action: () => sendRobotVelocity(-1, -1), desc: '왼쪽 후진' },
-    bottom: { key: ',', action: () => sendRobotVelocity(-1, 0), desc: '후진' },
-    bottomRight: { key: '.', action: () => sendRobotVelocity(-1, 1), desc: '오른쪽 후진' }
+    return (
+      <div style={{
+        position: 'fixed',
+        bottom: '20px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        backgroundColor: 'rgba(255, 0, 0, 0.8)',
+        color: 'white',
+        padding: '10px 20px',
+        borderRadius: '4px',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+        zIndex: 1000,
+        maxWidth: '90%',
+        textAlign: 'center',
+        fontSize: '14px',
+        fontWeight: 'bold'
+      }}>
+        {debug.inValidKeyWarning}
+      </div>
+    );
   };
 
   // 현재 선택된 ROS 버전에 따라 다른 키패드 렌더링
@@ -105,31 +131,31 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
             {/* 첫 번째 행 */}
             <div></div> {/* 빈 셀 */}
             <button 
-              onClick={ros1Mapping.top.action}
-              style={getButtonStyle(ros1Mapping.top.desc)}
+              onMouseDown={() => handleDirectionMouseDown(1,0, '전진')}
+              style={getButtonStyle('전진')}
             >
-              {ros1Mapping.top.key}
+              w
             </button>
             <div></div> {/* 빈 셀 */}
             
             {/* 두 번째 행 */}
             <button 
-              onClick={ros1Mapping.left.action}
-              style={getButtonStyle(ros1Mapping.left.desc)}
+              onMouseDown={() => handleDirectionMouseDown(0, 1, '좌회전')}
+              style={getButtonStyle('좌회전')}
             >
-              {ros1Mapping.left.key}
+              a
             </button>
             <button 
-              onClick={ros1Mapping.stop.action}
+              onClick={sendStopCommand}
               style={stopButtonStyle}
             >
-              {ros1Mapping.stop.key}
+              s
             </button>
             <button 
-              onClick={ros1Mapping.right.action}
-              style={getButtonStyle(ros1Mapping.right.desc)}
+              onMouseDown={() => handleDirectionMouseDown(0, -1, '우회전')}
+              style={getButtonStyle('우회전')}
             >
-              {ros1Mapping.right.key}
+              d
             </button>
           </div>
           
@@ -175,21 +201,24 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <tbody>
               <tr>
-                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center', width: '15%' }}>{ros1Mapping.top.key}</td>
-                <td style={{ padding: '8px', border: '1px solid #ddd', width: '35%' }}>{ros1Mapping.top.desc}</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center', width: '15%' }}>w</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd', width: '35%' }}>w</td>
               </tr>
               <tr>
-                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center' }}>{ros1Mapping.left.key}</td>
-                <td style={{ padding: '8px', border: '1px solid #ddd' }}>{ros1Mapping.left.desc}</td>
-                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center', width: '15%' }}>{ros1Mapping.stop.key}</td>
-                <td style={{ padding: '8px', border: '1px solid #ddd', width: '35%' }}>{ros1Mapping.stop.desc}</td>
+              <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center' }}>a</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd' }}>좌회전</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center', width: '15%' }}>s</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd', width: '35%' }}>정지</td>
               </tr>
               <tr>
-                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center' }}>{ros1Mapping.right.key}</td>
-                <td style={{ padding: '8px', border: '1px solid #ddd' }}>{ros1Mapping.right.desc}</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd', textAlign: 'center' }}>d</td>
+                <td style={{ padding: '8px', border: '1px solid #ddd' }}>우회전</td>
               </tr>
             </tbody>
           </table>
+          <div style={{marginTop: '10px', fontSize: '14px', color: '#555'}}>
+            * 키보드 키를 누르고 있으면 로봇이 움직이고, 키를 놓으면 자동 정지
+          </div>
         </div>
       </div>
     );
@@ -218,62 +247,62 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
             {/* 첫 번째 행 */}
             <button 
-              onClick={ros2Mapping.topLeft.action}
-              style={getButtonStyle(ros2Mapping.topLeft.desc)}
+              onMouseDown={() => handleDirectionMouseDown(1, 1, '왼쪽 전진')}
+              style={getButtonStyle('왼쪽 전진')}
             >
-              {ros2Mapping.topLeft.key}
+              u
             </button>
             <button 
-              onClick={ros2Mapping.top.action}
-              style={getButtonStyle(ros2Mapping.top.desc)}
+              onMouseDown={() => handleDirectionMouseDown(1, 0, '전진')}
+              style={getButtonStyle('전진')}
             >
-              {ros2Mapping.top.key}
+              i
             </button>
             <button 
-              onClick={ros2Mapping.topRight.action}
-              style={getButtonStyle(ros2Mapping.topRight.desc)}
+              onMouseDown={() => handleDirectionMouseDown(1, -1, '오른쪽 전진')}
+              style={getButtonStyle('오른쪽 전진')}
             >
-              {ros2Mapping.topRight.key}
+              o
             </button>
             
             {/* 두 번째 행 */}
             <button 
-              onClick={ros2Mapping.left.action}
-              style={getButtonStyle(ros2Mapping.left.desc)}
+              onMouseDown={() => handleDirectionMouseDown(0, 1, '좌회전')}
+              style={getButtonStyle('좌회전')}
             >
-              {ros2Mapping.left.key}
+              j
             </button>
             <button 
-              onClick={ros2Mapping.stop.action}
+              onClick={sendStopCommand}
               style={stopButtonStyle}
             >
-              {ros2Mapping.stop.key}
+              k
             </button>
             <button 
-              onClick={ros2Mapping.right.action}
-              style={getButtonStyle(ros2Mapping.right.desc)}
+              onMouseDown={() => handleDirectionMouseDown(0, -1, '우회전')}
+              style={getButtonStyle('우회전')}
             >
-              {ros2Mapping.right.key}
+              l
             </button>
             
             {/* 세 번째 행 */}
             <button 
-              onClick={ros2Mapping.bottomLeft.action}
-              style={getButtonStyle(ros2Mapping.bottomLeft.desc)}
+              onMouseDown={() => handleDirectionMouseDown(-1, -1, '왼쪽 후진')}
+              style={getButtonStyle('왼쪽 후진')}
             >
-              {ros2Mapping.bottomLeft.key}
+              m
             </button>
             <button 
-              onClick={ros2Mapping.bottom.action}
-              style={getButtonStyle(ros2Mapping.bottom.desc)}
+              onMouseDown={() => handleDirectionMouseDown(-1, 0, '후진')}
+              style={getButtonStyle('후진')}
             >
-              {ros2Mapping.bottom.key}
+              ,
             </button>
             <button 
-              onClick={ros2Mapping.bottomRight.action}
-              style={getButtonStyle(ros2Mapping.bottomRight.desc)}
+              onMouseDown={() => handleDirectionMouseDown(-1, 1, '오른쪽 후진')}
+              style={getButtonStyle('오른쪽 후진')}
             >
-              {ros2Mapping.bottomRight.key}
+              .
             </button>
           </div>
           
@@ -319,31 +348,34 @@ const TeleopKeypad: React.FC<TeleopKeypadProps> = ({
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <tbody>
               <tr>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.topLeft.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.topLeft.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.top.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.top.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.topRight.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.topRight.desc}</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>u</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>왼쪽 전진</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>i</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>전진</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>o</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>오른쪽 전진</td>
               </tr>
               <tr>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.left.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.left.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.stop.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.stop.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.right.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.right.desc}</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>j</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>좌회전</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>k</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>정지</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>l</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>우회전</td>
               </tr>
               <tr>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.bottomLeft.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.bottomLeft.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.bottom.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.bottom.desc}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>{ros2Mapping.bottomRight.key}</td>
-                <td style={{ padding: '5px', border: '1px solid #ddd' }}>{ros2Mapping.bottomRight.desc}</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>m</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>왼쪽 후진</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>,</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>후진</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd', textAlign: 'center' }}>.</td>
+                <td style={{ padding: '5px', border: '1px solid #ddd' }}>오른쪽 후진</td>
               </tr>
             </tbody>
           </table>
+          <div style={{ marginTop: '10px', fontSize: '14px', color: '#555' }}>
+            ※ 키보드 키를 누르고 있으면 로봇이 움직이고, 키를 놓으면 자동으로 정지합니다.
+          </div>
         </div>
       </div>
     );
