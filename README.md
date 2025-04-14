@@ -60,7 +60,7 @@ ROS에서 송출되는 영상을 WebRTC를 통해 React 앱에서 실시간 모�
 
 ## 📌 사용 방법
 1. Signaling 서버 (`server.signaling`) 실행.
-2. roslaunch realsense_camera rs_camera.launch (realsen
+2. roslaunch realsense_camera rs_camera.launch (realsense camera node)
 3. React 앱 (`receiver-app`) 실행.
 4. Python 송신기 (`sender_vanilla.py`) 실행. 
 5. (* 시뮬레이션과 연동 시 *) roslaunch turtlebot3_gazebo turtlebot3_empty_world.launch 등 gazebo환경 시작
