@@ -1,71 +1,81 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+// src/App.tsx
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import io from "socket.io-client";
 
+// 컴포넌트 임포트 
 import MessageInput from "./components/MessageInput";
 import AppLayout from "./components/AppLayout";
 import ConnectionStatus from "./components/ConnectionStatus";
 import VideoPlayer from "./components/VideoPlayer";
 import RobotControlPanel from "./components/RobotControlPanel";
 
-// process 객체가 없을 경우 폴리필 추가 (타입 오류 해결)
-if (typeof window !== 'undefined' && !window.process) {
-  window.process = {
-    env: {
-      NODE_ENV: 'development',
-      PUBLIC_URL: '',
-      REACT_APP_VERSION: '1.0.0'
-    }
-  } as any;
-}
+// 커스텀 훅 임포트
+import useVideoStream from "./hooks/useVideoStream";
+import useMessage from "./hooks/useMessage";
+import { useRobotControl } from "./hooks/useRobotControl"; 
 
-const pc_config = {
-  iceServers: [
-    {
-      urls: "stun:stun.l.google.com:19302",
-    },
-  ],
-};
-
-const socketServerUrl = process.env.REACT_APP_SOCKET_SERVER_URL;
-const roomId = process.env.REACT_APP_ROOM_ID;
-
-console.log("✅ 서버 URL (socketServerUrl):", socketServerUrl);
-console.log("✅ 방 ID (roomId):", roomId);
-
+// 설정 가져오기
+import { SOCKET_SERVER_URL, ROOM_ID, PC_CONFIG } from "./config/constants";
 
 const App = () => {
-  {/* 참조값 관리 */}
-  // Socket.IO 서버와의 연결 유지
-  const socketRef = useRef<SocketIOClient.Socket>(null);
-  // RTCPeerConnection 객체 유지 -> WebRTC 연결 관리
-  const pcRef = useRef<RTCPeerConnection>(null);
-  // <video> DOM 요소에 접근해서 원격 스트림 표시하기 위해 사용
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  // WebRTC 데이터 채널 유지
-  const dataChannelRef = useRef<RTCDataChannel>(null);
-  //메시지 입력창 제어
-  const inputRef = useRef<HTMLInputElement>(null);
-  
-  {/* 상태 관리 */}
-  // 입력창 메시지 상태 관리
-  const [message, setMessage] = useState<string>("");
-  // 연결 상태 표시 -> 연결중, 연결됨, 연결 실패
+  // 연결 상태 관리
   const [connectionStatus, setConnectionStatus] = useState<string>("연결 중...");
-  // 입력창 포커스 상태
-  const [inputFocused, setInputFocused] = useState<boolean>(false);
-  // 재연결 트리거, 값이 바뀔 때마다 useEffect 통해 다시 연결함
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0);
-  // 비디오 재생 상태
-  const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
-  // ROS 버전 
-  const [rosVersion, setRosVersion] = useState("ros1"); //기본값이 ros1 
-  // 로봇 이동 상태 -> 정지, 전진, 좌회전
+  
+  // 로봇 상태 관리 
+  const [rosVersion, setRosVersion] = useState<string>("ros1");
   const [movementState, setMovementState] = useState<string>('정지');
-  // 로봇 속도 레벨 -> 1~10
   const [speedLevel, setSpeedLevel] = useState<number>(5);
+  
+  // 참조값 관리
+  const socketRef = useRef<SocketIOClient.Socket>(null);
+  const pcRef = useRef<RTCPeerConnection>(null);
+  const dataChannelRef = useRef<RTCDataChannel>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 데이터 채널 상태 추적
+  const [dataChannelReady, setDataChannelReady] = useState<boolean>(false);
+
+  // 비디오 스트림 관리 훅
+  const {
+    remoteVideoRef,
+    isVideoPlaying,
+    setIsVideoPlaying,
+    playVideo,
+  } = useVideoStream();
+
+  // 메시지 입력/전송 관리 훅
+  const {
+    message,
+    setMessage,
+    inputFocused,
+    setInputFocused,
+    handleInputClick,
+    handleInputChange,
+    handleFocus,
+    handleBlur,
+    handleKeyPress,
+    handleMessageSubmit,
+  } = useMessage({
+    onSendMessage: (msg) => {
+      if (!dataChannelReady || !dataChannelRef.current) {
+        alert("연결이 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.");
+        return;
+      }
+      
+      console.log("메시지 전송:", msg);
+      dataChannelRef.current.send(msg);
+      
+      // 메시지 전송 후 다시 입력창에 포커스
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    },
+    initialRef: inputRef
+  });
 
   // ICE 수집 완료 대기 함수 - 바닐라 ICE 방식
-  const waitForIceGatheringComplete = (pc: RTCPeerConnection): Promise<void> => {
+  const waitForIceGatheringComplete = useCallback((pc: RTCPeerConnection): Promise<void> => {
     console.log("ICE 후보 수집 대기 중...");
     return new Promise<void>((resolve) => {
       // 이미 완료되었으면 즉시 해결
@@ -96,7 +106,68 @@ const App = () => {
         }
       }, 10000);
     });
-  };
+  }, []);
+
+  // 속도 레벨에 따른 실제 속도값 계산
+  const calculateVelocity = useCallback((value: number): number => {
+    if (value === 0) return 0;
+    const baseSpeed = 0.2; 
+    const maxSpeed = 1.0;
+    return baseSpeed + ((maxSpeed - baseSpeed) * (speedLevel - 1) / 9) * value;
+  }, [speedLevel]);
+
+  // 이동 방향에 따른 상태 텍스트 반환
+  const getMovementState = useCallback((linearX: number, angularZ: number): string => {
+    if (linearX === 0 && angularZ === 0) return '정지';
+    if (linearX > 0 && angularZ === 0) return '전진';
+    if (linearX < 0 && angularZ === 0) return '후진';
+    if (linearX === 0 && angularZ > 0) return '좌회전';
+    if (linearX === 0 && angularZ < 0) return '우회전';
+    if (linearX > 0 && angularZ > 0) return '왼쪽 전진';
+    if (linearX > 0 && angularZ < 0) return '오른쪽 전진';
+    if (linearX < 0 && angularZ < 0) return '왼쪽 후진';
+    if (linearX < 0 && angularZ > 0) return '오른쪽 후진';
+    return '알 수 없음';
+  }, []);
+
+  // 로봇에 속도 명령 전송
+  const sendRobotVelocity = useCallback((linearX: number, angularZ: number, keyInfo?: string) => {
+    if (!dataChannelReady || !dataChannelRef.current) {
+      console.log('데이터 채널이 연결되어 있지 않습니다.');
+      return;
+    }
+
+    try {
+      // 로봇 제어 메시지 형식 생성
+      const robotCommand = {
+        type: 'robot_command',
+        linear: { x: calculateVelocity(linearX), y: 0, z: 0 },
+        angular: { x: 0, y: 0, z: calculateVelocity(angularZ) },
+        keyInfo: keyInfo || '알 수 없음'
+      };
+
+      // 데이터 채널을 통해 명령 전송
+      dataChannelRef.current.send(JSON.stringify(robotCommand));
+      console.log('로봇 명령 전송:', robotCommand, '원본값:', { linearX, angularZ, keyInfo });
+
+      // 버튼 두개 한꺼번에 클릭되는 상황 방지-> 지연시킴
+      setTimeout(() => {
+        setMovementState(getMovementState(linearX, angularZ));
+      }, 10);
+    } catch (error) {
+      console.error('로봇 명령 전송 오류:', error);
+
+      checkDataChannelState();
+    }
+  }, [calculateVelocity, getMovementState, dataChannelReady]);
+
+  // 데이터 채널 상태 확인 및 업데이트
+  const checkDataChannelState = useCallback(() => {
+    const isReady = dataChannelRef.current && dataChannelRef.current.readyState === "open";
+    console.log("데이터 채널 상태 확인:", isReady ? "준비됨" : "준비되지 않음", dataChannelRef.current?.readyState);
+    setDataChannelReady(Boolean(isReady));
+    return Boolean(isReady);
+  }, []);
 
   // WebRTC 연결 설정
   const setupConnection = useCallback(async () => {
@@ -117,6 +188,7 @@ const App = () => {
       dataChannelRef.current.onopen = () => {
         console.log("데이터 채널이 열렸습니다.");
         setConnectionStatus("연결됨");
+        setDataChannelReady(true);
 
         // 데이터 채널이 열리면 입력창에 포커스
         setTimeout(() => {
@@ -132,11 +204,23 @@ const App = () => {
 
       dataChannelRef.current.onerror = (error) => {
         console.error("데이터 채널 오류:", error);
+        setDataChannelReady(false);
       };
       
       dataChannelRef.current.onclose = () => {
         console.log("데이터 채널이 닫혔습니다.");
         setConnectionStatus("연결 끊김");
+        setDataChannelReady(false);
+
+        setTimeout(() => {
+          console.log("데이터 채널 닫힘 감지 - 재연결 시도");
+
+          if (pcRef.current) {
+            pcRef.current.close();
+            pcRef.current = null;
+          }
+          setReconnectTrigger(prev => prev + 1);
+        }, 1000);
       };
       
       // 바닐라 ICE 방식: ICE 후보를 개별적으로 전송하지 않고 SDP에 포함시킴
@@ -152,10 +236,13 @@ const App = () => {
       // ICE 연결 상태 변경 감지
       pcRef.current.oniceconnectionstatechange = () => {
         console.log("ICE 연결 상태 변경:", pcRef.current?.iceConnectionState);
+        
         if (pcRef.current?.iceConnectionState === "connected") {
           setConnectionStatus("연결됨");
+          checkDataChannelState();
         } else if (pcRef.current?.iceConnectionState === "disconnected") {
           setConnectionStatus("연결 끊김");
+          setDataChannelReady(false);
           // 5초 후 재연결 시도
           setTimeout(() => {
             setReconnectTrigger(prev => prev + 1);
@@ -163,6 +250,7 @@ const App = () => {
         } else if (pcRef.current?.iceConnectionState === "failed") {
           setConnectionStatus("연결 실패");
           setIsVideoPlaying(false);
+          setDataChannelReady(false);
           // 즉시 재연결 시도
           setReconnectTrigger(prev => prev + 1);
         }
@@ -174,7 +262,6 @@ const App = () => {
         if (ev.streams && ev.streams[0]) {
           console.log("원격 스트림 ID:", ev.streams[0].id);
           console.log("원격 비디오 트랙:", ev.streams[0].getVideoTracks().length);
-          // console.log("원격 오디오 트랙:", ev.streams[0].getAudioTracks().length);
           
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = ev.streams[0];
@@ -191,138 +278,42 @@ const App = () => {
           console.warn("원격 스트림이 없습니다.");
         }
       };
+
+      // 원격 데이터 채널 수신 처리
+      pcRef.current.ondatachannel = (event) => {
+        console.log("원격 데이터 채널 수신:", event.channel.label);
+
+        // 로봇 측에서 생성한 데이터 채널로 업데이트
+        dataChannelRef.current = event.channel;
+
+        // 이벤트 핸들러 재설정
+        event.channel.onopen = () => {
+          console.log("수신된 데이터 채널 열림");
+          setDataChannelReady(true);
+          setConnectionStatus("연결됨");
+        };
+
+        event.channel.onclose = () => {
+          console.log("수신된 데이터 채널 닫힘");
+          setDataChannelReady(false);
+          setConnectionStatus("연결됨");
+        };
+
+        event.channel.onmessage = (msgEvent) => {
+          console.log("수신된 데이터 채널 메시지:", msgEvent.data)
+        }
+      }
       
       // 방 참가 이벤트 발생
       socketRef.current.emit("join_room", {
-        room: roomId,
+        room: ROOM_ID,
       });
       console.log("방 참가 요청 전송");
       
     } catch (e) {
       console.error("연결 설정 오류:", e);
     }
-  }, []);
-
-  const playVideo = useCallback(() => {
-    if (remoteVideoRef.current) {
-      console.log("비디오 재생 시도");
-      console.log("현재 srcObject 상태:", remoteVideoRef.current.srcObject ? "있음" : "없음");
-      console.log("현재 재생 상태:", isVideoPlaying ? "재생 중" : "재생 안 됨");
-      
-      // 스트림이 없으면 스트림 확인 메시지 표시
-      if (!remoteVideoRef.current.srcObject) {
-        console.warn("비디오 스트림이 없습니다. 연결 상태를 확인하세요.");
-        alert("비디오 스트림이 없습니다. 연결 상태를 확인하세요.");
-        return;
-      }
-  
-      // 항상 mute 상태로 먼저 시도 (자동 재생 정책 우회)
-      remoteVideoRef.current.muted = true;
-      
-      // 재생 시도
-      remoteVideoRef.current.play()
-        .then(() => {
-          console.log("비디오 재생 성공");
-          setIsVideoPlaying(true);
-          
-          // 1초 후 음소거 해제 시도 (필요한 경우)
-          setTimeout(() => {
-            if (remoteVideoRef.current) {
-              // 사용자 상호작용이 있었으므로 음소거 해제 가능
-              // remoteVideoRef.current.muted = false;  // 필요에 따라 주석 해제
-            }
-          }, 1000);
-        })
-        .catch(e => {
-          console.error("비디오 재생 오류:", e);
-          setIsVideoPlaying(false);
-          
-          // 자동 재생 정책 관련 오류 메시지 표시
-          alert("비디오 재생에 실패했습니다. 브라우저의 자동 재생 정책으로 인해 제한될 수 있습니다. 다시 시도해주세요.");
-        });
-    }
-  }, [isVideoPlaying]);
-  // 속도 레벨에 따른 실제 속도값 계산
-  const calculateVelocity = (value: number): number => {
-    if (value === 0) return 0;
-    const baseSpeed = 0.2; 
-    const maxSpeed = 1.0;
-    return baseSpeed + ((maxSpeed - baseSpeed) * (speedLevel - 1) / 9) * value;
-  };
-
-  // 이동 방향에 따른 상태 텍스트 반환
-    const getMovementState = (linearX: number, angularZ: number): string => {
-      if (linearX === 0 && angularZ === 0) return '정지';
-      if (linearX > 0 && angularZ === 0) return '전진';
-      if (linearX < 0 && angularZ === 0) return '후진';
-      if (linearX === 0 && angularZ > 0) return '좌회전';
-      if (linearX === 0 && angularZ < 0) return '우회전';
-      if (linearX > 0 && angularZ > 0) return '왼쪽 전진';
-      if (linearX > 0 && angularZ < 0) return '오른쪽 전진';
-      if (linearX < 0 && angularZ < 0) return '왼쪽 후진';
-      if (linearX < 0 && angularZ > 0) return '오른쪽 후진';
-      return '알 수 없음';
-    };
-
-  // 로봇에 속도 명령 전송
-  const sendRobotVelocity = useCallback((linearX: number, angularZ: number, keyInfo?: string) => {
-    if (!dataChannelRef.current || dataChannelRef.current.readyState !== "open") {
-      console.log('데이터 채널이 연결되어 있지 않습니다.');
-      return;
-    }
-
-    // 로봇 제어 메시지 형식 생성
-    const robotCommand = {
-      type: 'robot_command',
-      linear: { x: calculateVelocity(linearX), y: 0, z: 0 },
-      angular: { x: 0, y: 0, z: calculateVelocity(angularZ) },
-      keyInfo: keyInfo || '알 수 없음'
-    };
-
-    // 데이터 채널을 통해 명령 전송
-    dataChannelRef.current.send(JSON.stringify(robotCommand));
-    console.log('로봇 명령 전송:', robotCommand, '원본값:', { linearX, angularZ , keyInfo});
-
-    // 버튼 두개 한꺼번에 클릭되는 상황 방지-> 지연시킴
-    setTimeout(() => {
-      setMovementState(getMovementState(linearX, angularZ));
-    }, 10);
-    
-  }, [[calculateVelocity, getMovementState]]);
-
-  // 메시지 전송 함수
-  const sendMessage = useCallback(() => {
-    if (!dataChannelRef.current || dataChannelRef.current.readyState !== "open") {
-      alert("연결이 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.");
-      return;
-    }
-    
-    if (message.trim() === "") return;
-    
-    console.log("메시지 전송:", message);
-    dataChannelRef.current.send(message);
-    setMessage(""); // 입력창 초기화
-    
-    // 메시지 전송 후 다시 입력창에 포커스
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
-    
-  }, [message]);
-
-  // 입력창 클릭 핸들러
-  const handleInputClick = useCallback((e: React.MouseEvent) => {
-    // 이벤트 전파 중지
-    e.stopPropagation();
-    
-    console.log("입력창 클릭됨");
-    
-    // 명시적으로 포커스 설정
-    if (inputRef.current) {
-      inputRef.current.focus();
-      console.log("입력창에 포커스 설정됨");
-    }
-  }, []);
+  }, [remoteVideoRef, setIsVideoPlaying, checkDataChannelState]);
 
   // Offer 생성 - 바닐라 ICE 방식
   const createOffer = useCallback(async () => {
@@ -358,7 +349,7 @@ const App = () => {
     } catch (e) {
       console.error("Offer 생성 오류:", e);
     }
-  }, []);
+  }, [waitForIceGatheringComplete]);
 
   // Answer 생성 - 바닐라 ICE 방식
   const createAnswer = useCallback(async (sdp: RTCSessionDescription) => {
@@ -401,7 +392,7 @@ const App = () => {
     } catch (e) {
       console.error("Answer 생성 오류:", e);
     }
-  }, []);
+  }, [waitForIceGatheringComplete]);
 
   // 연결 초기화
   const initializeConnection = useCallback(() => {
@@ -414,89 +405,63 @@ const App = () => {
     
     // 비디오 재생 상태 초기화
     setIsVideoPlaying(false);
+    setDataChannelReady(false);
     
     // RTCPeerConnection 초기화
-    pcRef.current = new RTCPeerConnection(pc_config);
+    pcRef.current = new RTCPeerConnection(PC_CONFIG);
     console.log("RTCPeerConnection 초기화 완료");
     
     // 연결 설정
     setupConnection();
-  }, [setupConnection]);
+  }, [setupConnection, setIsVideoPlaying]);
 
-  // 재연결 효과
-  {/* reconnecterTrigger 값이 바뀔 때마다 자동으로 연결 초기화
-    (initializeConnection()), 주로 연결 실패하거나 끊어졌을 때 재연결 위한 처리 */}
-  useEffect(() => {
-    if (reconnectTrigger > 0) {
-      console.log("재연결 시도:", reconnectTrigger);
-      initializeConnection();
-    }
-  }, [reconnectTrigger, initializeConnection]);
-  
-  const handleSendMessage = useCallback(() => {
-    sendMessage();
-  }, [sendMessage]);
+  // 원본 로봇 제어 훅 사용 - RobotControlPanel에 전달하지 않고 내부적으로만 사용
+  useRobotControl({
+    sendRobotVelocity,
+    isDataChannelOpen: dataChannelReady,
+    rosVersion
+  });
 
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setMessage(e.target.value);
-  }, []);
-
-  const handleFocus = useCallback<React.FocusEventHandler<HTMLInputElement>>((e) => {
-    console.log("입력창 포커스됨");
-    setInputFocused(true);
-  }, []);
-
-  const handleBlur = useCallback<React.FocusEventHandler<HTMLInputElement>>(() => {
-    setInputFocused(false);
-  }, []);
-
-  // Enter 키 이벤트 처리
-  const handleKeyPress = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      sendMessage();
-    }
-  }, [sendMessage]);
- 
   // 초기 설정
-  {/* 컴포넌트가 처음 렌더링될 때 Socket.IO 서버에 연결하고 각종 이벤트 리스너 설정
-    연결 오류 시 에빈트 등록, 컴포넌트 사라질 때 연결을 정리*/}
   useEffect(() => {
     console.log("컴포넌트 마운트 - 연결 초기화");
     
     // Socket.IO 연결 설정
-    socketRef.current = io.connect(socketServerUrl, {
+    const socket = io.connect(SOCKET_SERVER_URL, {
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000
     });
-    console.log("Socket.IO 연결 시도");
+    socketRef.current = socket;
+    
+    console.log("Socket.IO 연결 시도:", SOCKET_SERVER_URL);
     
     // Socket.IO 이벤트 리스너 설정
-    socketRef.current.on("connect", () => {
+    socket.on("connect", () => {
       console.log("Socket.IO 서버에 연결됨");
       initializeConnection();
     });
     
-    socketRef.current.on("connect_error", (error: any) => {
+    socket.on("connect_error", (error: any) => {
       console.error("Socket.IO 연결 오류:", error);
       setConnectionStatus("서버 연결 오류");
     });
     
-    socketRef.current.on("all_users", (allUsers: Array<{ id: string }>) => {
+    socket.on("all_users", (allUsers: Array<{ id: string }>) => {
       console.log("all_users 이벤트 수신:", allUsers);
       if (allUsers.length > 0) {
         createOffer();
       }
     });
 
-    socketRef.current.on("getOffer", (sdp: RTCSessionDescription) => {
+    socket.on("getOffer", (sdp: RTCSessionDescription) => {
       console.log("getOffer 이벤트 수신");
       createAnswer(sdp);
     });
 
-    socketRef.current.on("getAnswer", async (sdp: RTCSessionDescription) => {
+    socket.on("getAnswer", async (sdp: RTCSessionDescription) => {
       console.log("getAnswer 이벤트 수신");
       if (!pcRef.current) return;
       
@@ -509,6 +474,10 @@ const App = () => {
         if (currentState !== "stable") {
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
           console.log("Remote description 설정 완료 (answer)");
+
+          setTimeout(() => {
+            checkDataChannelState();
+          }, 1000);
         } else {
           console.log("이미 stable 상태, answer 무시");
         }
@@ -523,21 +492,18 @@ const App = () => {
 
     // 바닐라 ICE 방식에서는 개별 ICE 후보 처리가 필요 없지만
     // 호환성을 위해 이벤트 핸들러는 유지
-    socketRef.current.on(
-      "getCandidate",
-      async (candidate: RTCIceCandidateInit) => {
-        console.log("getCandidate 이벤트 수신 (바닐라 ICE에서는 일반적으로 무시됨)");
-        if (!pcRef.current) return;
-        
-        // 호환성을 위해 후보 처리는 유지
-        try {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log("ICE candidate 추가 완료");
-        } catch (error) {
-          console.error("ICE candidate 추가 오류:", error);
-        }
+    socket.on("getCandidate", async (candidate: RTCIceCandidateInit) => {
+      console.log("getCandidate 이벤트 수신 (바닐라 ICE에서는 일반적으로 무시됨)");
+      if (!pcRef.current) return;
+      
+      // 호환성을 위해 후보 처리는 유지
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log("ICE candidate 추가 완료");
+      } catch (error) {
+        console.error("ICE candidate 추가 오류:", error);
       }
-    );
+    });
 
     // 컴포넌트 마운트 후 입력창에 포커스
     setTimeout(() => {
@@ -545,6 +511,11 @@ const App = () => {
         inputRef.current.focus();
       }
     }, 1000);
+
+    // 주기적 데이터 채널 상태 확인
+    const channelCheckInterval = setInterval(() => {
+      checkDataChannelState();
+    }, 5000);
 
     // 컴포넌트 언마운트 시 정리
     return () => {
@@ -560,12 +531,25 @@ const App = () => {
         pcRef.current.close();
       }
     };
-  }, [setupConnection, createOffer, createAnswer, initializeConnection, playVideo]);
+  }, [setupConnection, createOffer, createAnswer, initializeConnection, checkDataChannelState]);
+
+  // 재연결 효과
+  useEffect(() => {
+    if (reconnectTrigger > 0) {
+      console.log("재연결 시도:", reconnectTrigger);
+      initializeConnection();
+    }
+  }, [reconnectTrigger, initializeConnection]);
 
   // 수동 재연결 핸들러
-  const handleReconnect = () => {
+  const handleReconnect = useCallback(() => {
     setReconnectTrigger(prev => prev + 1);
-  };
+  }, []);
+
+  // 데이터 채널 상태 변경에 대한 효과
+  useEffect(() => {
+    console.log("데이터 채널 상태 변경:", dataChannelReady ? "준비됨": "준비되지 않음");
+  }, [dataChannelReady]);
 
   return (
     <AppLayout>
@@ -577,12 +561,12 @@ const App = () => {
       {/* 좌우 컨텐츠를 담는 컨테이너 */}
       <div style={{
         display: 'flex',
-        flexDirection: 'row', // 내부 컨텐츠는 가로 배치
+        flexDirection: 'row',
         alignItems: 'flex-start',
         justifyContent: 'center',
         width: '100%',
         gap: '30px',
-        flex: 1 // 남은 공간 차지
+        flex: 1
       }}>
         {/* 왼쪽 섹션: 비디오와 메시지 입력 */}
         <div style={{
@@ -605,13 +589,13 @@ const App = () => {
             onFocus={handleFocus}
             onBlur={handleBlur}
             onClick={handleInputClick}
-            onSend={sendMessage}
+            onSend={handleMessageSubmit}
             inputRef={inputRef}
             isFocused={inputFocused}
           />
         </div>
 
-        {/* ROS 버전 선택 */}
+        {/* 로봇 제어 패널 */}
         <RobotControlPanel
           rosVersion={rosVersion}
           setRosVersion={setRosVersion}
@@ -619,11 +603,11 @@ const App = () => {
           movementState={movementState}
           speedLevel={speedLevel}
           setSpeedLevel={setSpeedLevel}
+          dataChannelReady={dataChannelReady}
         />
       </div>
     </AppLayout>
-
-);
+  );
 };
 
 export default App;

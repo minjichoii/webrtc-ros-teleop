@@ -21,7 +21,20 @@ const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
             justifyContent: 'center',
             gap: '10px'
           }}>
-            <span>{connectionStatus}</span>
+            <div style={{
+                    width: '10px',
+                    height: '10px',
+                    borderRadius: '50%',
+                    backgroundColor: connectionStatus === "연결됨" ? '#2e7d32' : '#c62828',
+                    marginRight: '8px'
+                }} />
+            
+            {connectionStatus === "연결됨" ? (
+              <span>클라이언트 연결됨</span>
+            ): (
+              <span>{connectionStatus}</span>
+            )}
+
             {connectionStatus !== "연결됨" && (
               <button 
                 onClick={handleReconnect}

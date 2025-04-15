@@ -9,6 +9,7 @@ interface RobotControlPanelProps {
     movementState: string;
     speedLevel: number;
     setSpeedLevel: React.Dispatch<React.SetStateAction<number>>;
+    dataChannelReady?: boolean;
 }
 
 const RobotControlPanel: React.FC<RobotControlPanelProps> = ({
@@ -17,7 +18,8 @@ const RobotControlPanel: React.FC<RobotControlPanelProps> = ({
     sendRobotVelocity,
     movementState,
     speedLevel,
-    setSpeedLevel
+    setSpeedLevel,
+    dataChannelReady=false
 }) => {
     return (
         <div style={{
@@ -28,6 +30,28 @@ const RobotControlPanel: React.FC<RobotControlPanelProps> = ({
             gap: '20px'
           }}>
             
+            {/* 데이터 채널 상태 표시 */}
+            <div style={{
+                backgroundColor: dataChannelReady ? '#e6f7e6' : '#fff3e6',
+                borderRadius: '5px',
+                padding: '8px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '100%'
+            }}>
+                <div style={{
+                    width: '10px',
+                    height: '10px',
+                    borderRadius: '50%',
+                    backgroundColor: dataChannelReady ? '#4CAF50' : '#FF9800',
+                    marginRight: '8px'
+                }} />
+                <span style={{ fontSize: '14px' }}>
+                    {dataChannelReady ? '제어 채널 준비됨' : '제어 채널 연결 중...'}
+                </span>
+            </div>
+
             <RosVersionSelect
               rosVersion={rosVersion}
               setRosVersion={setRosVersion}
